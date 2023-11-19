@@ -19,21 +19,21 @@ def parse_cap_file(filename):
         elif magic_number == 0xd4c3b2a1:
             print("Reverse bytes")
             bigEndian = False
-        else:
-            print("Invalid PCAP file format.")
-            return
+        # else:
+        #     print("Invalid PCAP file format.")
+        #     return
 
         orig_time = 0
         packet_number = 1
-        
+
         packet_header = file.read(16)
         # Get Timestamp of first packet
         if (bigEndian):
-            orig_time = struct.unpack('I', packet_header[0:4])[0] + (struct.unpack('<I', packet_header[4:8])[0]*0.000001)
+            orig_time = struct.unpack('I', packet_header[0:4])[
+                0] + (struct.unpack('<I', packet_header[4:8])[0]*0.000001)
         else:
-            orig_time = struct.unpack('I', packet_header[0:4])[0] + (struct.unpack('>I', packet_header[4:8])[0]*0.000001)
-
-
+            orig_time = struct.unpack('I', packet_header[0:4])[
+                0] + (struct.unpack('>I', packet_header[4:8])[0]*0.000001)
 
         while file.readable:
             if not packet_header:
@@ -53,7 +53,7 @@ def parse_cap_file(filename):
             ip_header_buffer = file.read(20)
             get_IP_info(curPacket, ip_header_buffer)
 
-            # If IP Header is longer than 20 bytes
+            # If IP Header is longer than 20 bytes, read options
             if curPacket.IP_header.ip_header_len > 20:
                 _ = file.read(curPacket.IP_header.ip_header_len - 20)
 
@@ -61,18 +61,19 @@ def parse_cap_file(filename):
             tcp_header_buffer = file.read(20)
             get_TCP_info(curPacket, tcp_header_buffer)
 
-            # Read  TCPHeader options 
+            # Read  TCPHeader options
             if curPacket.TCP_header.data_offset > 20:
                 _ = file.read(curPacket.TCP_header.data_offset - 20)
 
             # Read the rest of the payload
             payload_len = incl_len - (14 + curPacket.TCP_header.data_offset +
                                       curPacket.IP_header.ip_header_len)
-            bytes_len = curPacket.IP_header.total_len - curPacket.TCP_header.data_offset - curPacket.IP_header.ip_header_len 
+            bytes_len = curPacket.IP_header.total_len - \
+                curPacket.TCP_header.data_offset - curPacket.IP_header.ip_header_len
             _ = file.read(payload_len)
             process_packet(bytes_len,
                            curPacket, connections)
-            
+
             # Move to next packet
             packet_number += 1
             packet_header = file.read(16)
@@ -85,6 +86,9 @@ def get_IP_info(curPacket, ip_header_buffer):
         ip_header_buffer[12:16], ip_header_buffer[16:20])
     curPacket.IP_header.get_header_len(ip_header_buffer[0:1])
     curPacket.IP_header.get_total_len(ip_header_buffer[2:4])
+    curPacket.IP_header.get_protocol(ip_header_buffer[9:10])
+    curPacket.IP_header.get_fragment_offset(ip_header_buffer[6:8])
+    curPacket.IP_header.get_more_fragments(ip_header_buffer[6:8])
 
 
 def get_TCP_info(curPacket, tcp_header_buffer):
@@ -101,19 +105,30 @@ def get_TCP_info(curPacket, tcp_header_buffer):
 def process_packet(payload_len, curPacket, connections):
     source_ip = curPacket.IP_header.src_ip
     destination_ip = curPacket.IP_header.dst_ip
+    protocol = curPacket.IP_header.protocol
+    mf = curPacket.IP_header.mf
+    fragment_offset = curPacket.IP_header.fragment_offset
     source_port = curPacket.TCP_header.src_port
     destination_port = curPacket.TCP_header.dst_port
     timestamp = curPacket.timestamp
 
     connection_id = f"{source_ip}:{source_port}-{destination_ip}:{destination_port}"
-    src_to_dst = f"{destination_ip}:{destination_port}-{source_ip}:{source_port}" 
+    src_to_dst = f"{destination_ip}:{destination_port}-{source_ip}:{source_port}"
     if connection_id not in connections and src_to_dst not in connections:
         connections[connection_id] = Connection()
         connections[connection_id].source_ip = source_ip
         connections[connection_id].destination_ip = destination_ip
         connections[connection_id].source_port = source_port
         connections[connection_id].destination_port = destination_port
+        connections[connection_id].fragment_offset = fragment_offset
+        if (mf):
+            connections[connection_id].num_frags += 1
+        intermediate_dest = destination_ip
+        if intermediate_dest not in connections[connection_id].inter_nodes:
+            connections[connection_id].inter_nodes.append(intermediate_dest)
         connections[connection_id].start_time = timestamp
+        if protocol not in connections[connection_id].protocols and (protocol == 1 or protocol == 17):
+            connections[connection_id].protocols.append(protocol)
 
     if src_to_dst in connections:
         connection = connections[src_to_dst]
@@ -122,13 +137,12 @@ def process_packet(payload_len, curPacket, connections):
 
     # Get Flags Data
     if curPacket.TCP_header.flags["SYN"] == 1:
-        connection.syn_num += 1 
+        connection.syn_num += 1
     if curPacket.TCP_header.flags["FIN"] == 1:
         connection.fin_num += 1
         connection.end_time = timestamp
     if curPacket.TCP_header.flags["RST"] == 1:
         connection.rst_num += 1
-
 
     # Update packet and data counts based on packet direction
     if source_ip == connection.source_ip and source_port == connection.source_port:
@@ -145,6 +159,7 @@ def process_packet(payload_len, curPacket, connections):
         if curPacket.TCP_header.ack_num == connection.expected_ack:
             connection.rtt_end.append(curPacket.timestamp)
             connection.expected_ack = -1
+
 
 def calculate_general_statistics(connections):
     total_complete_connections = 0
@@ -188,11 +203,10 @@ def calculate_general_statistics(connections):
                 total_duration += duration
 
                 for i in range(len(connection.rtt_end)):
-                    cur_rtt = connection.rtt_end[i] -  connection.rtt_start[i]
+                    cur_rtt = connection.rtt_end[i] - connection.rtt_start[i]
                     connection.rtt_num += 1
                     total_rtt += cur_rtt
                     rtt.append(cur_rtt)
-
 
                 if packets < min_packets:
                     min_packets = packets
@@ -217,10 +231,30 @@ def calculate_general_statistics(connections):
 
             min_rtt = min(rtt)
             max_rtt = max(rtt)
-            mean_rtt = total_rtt/len(rtt) 
-            
+            mean_rtt = total_rtt/len(rtt)
 
     return total_complete_connections, reset_connections, open_connections, min_duration, max_duration, total_duration, min_rtt, max_rtt, mean_rtt, min_packets, max_packets, total_packets, min_window_size, max_window_size, mean_window_size
+
+
+def print_connection_info(connections):
+    protocols = {1: "ICMP", 2: "IGMP", 6: "TCP",
+                 17: "UDP", 41: "ENCAP", 89: "OSPF", 132: "SCTP"}
+
+    for connection in connections.values():
+        print(f"Source IP: {connection.source_ip}")
+        print(f"Destination IP: {connection.destination_ip}")
+
+        print("Intermediate Destination Nodes:")
+        for i, intermediate_dest in enumerate(connection.inter_nodes, start=1):
+            print(f"{i}. {intermediate_dest}")
+
+        print("\nProtocol Values:")
+        for protocol in connection.protocols:
+            print(f"{protocol}: {protocols[protocol]}")
+
+        print(f"\nNumber of Fragments: {connection.num_frags}")
+        print(f"Offset of Last Fragment: {connection.fragment_offset}")
+        print("\n")
 
 
 if __name__ == "__main__":
@@ -230,3 +264,4 @@ if __name__ == "__main__":
 
     filename = sys.argv[1]
     connections = parse_cap_file(filename)
+    print_connection_info(connections)

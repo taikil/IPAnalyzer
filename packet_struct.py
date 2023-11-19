@@ -6,7 +6,9 @@ class IP_Header:
     dst_ip = None  # <type 'str'>
     ip_header_len = None  # <type 'int'>
     total_len = None  # <type 'int'>
-    # protocol = None  # <type 'int'>
+    protocol = None  # <type 'int'>
+    fragment_offset = None  # <type 'int'>
+    mf = False  # <type 'bool'>
 
     def __init__(self):
         self.src_ip = None
@@ -47,6 +49,31 @@ class IP_Header:
         length = num1+num2+num3+num4
         # print(f"Total Length: {length}")
         self.total_len_set(length)
+
+    def get_protocol(self, protocol_bytes):
+        self.protocol = struct.unpack('B', protocol_bytes)[0]
+
+    def get_fragment_offset(self, flags_and_offset_bytes):
+        """
+        Extracts and sets the fragment offset field in the IP header.
+
+        Parameters:
+        - flags_and_offset_bytes (bytes): The bytes representing the flags and offset fields in the IP header.
+        """
+        flags_and_offset = struct.unpack('>H', flags_and_offset_bytes)[0]
+        # Extract the last 13 bits (fragment offset)
+        self.fragment_offset = flags_and_offset & 0x1FFF
+
+    def get_more_fragments(self, flags_and_offset_bytes):
+        """
+        Extracts and sets the more fragments field in the IP header.
+
+        Parameters:
+        - flags_and_offset_bytes (bytes): The bytes representing the flags and offset fields in the IP header.
+        """
+        flags_and_offset = struct.unpack('>H', flags_and_offset_bytes)[0]
+        # Check the 14th bit (more fragments)
+        self.more_fragments = (flags_and_offset & 0x2000) != 0
 
 
 class TCP_Header:
@@ -172,6 +199,7 @@ class packet():
     RTT_value = 0
     RTT_flag = False
     buffer = None
+    num_frags = 0
 
     def __init__(self):
         self.IP_header = IP_Header()
@@ -197,6 +225,7 @@ class packet():
         rtt = p.timestamp-self.timestamp
         self.RTT_value = round(rtt, 8)
 
+
 class Connection:
     def __init__(self):
         self.source_ip = ""
@@ -220,3 +249,7 @@ class Connection:
         self.rtt_end = []
         self.rtt_num = 0
         self.rtt = []
+        self.inter_nodes = []
+        self.num_frags = 0
+        self.protocols = []
+        self.fragment_offset = 0
