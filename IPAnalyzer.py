@@ -12,28 +12,35 @@ def parse_cap_file(filename):
         magic_number, _, _, _, _, _, _ = struct.unpack(
             "IHHIIII", global_header)
 
-        bigEndian = True
-
-        if magic_number == 0xa1b2c3d4:
-            print("Valid PCAP file detected.")
-        elif magic_number == 0xd4c3b2a1:
-            print("Reverse bytes")
-            bigEndian = False
-        # else:
-        #     print("Invalid PCAP file format.")
-        #     return
-
+        ms = True
         orig_time = 0
         packet_number = 1
 
         packet_header = file.read(16)
         # Get Timestamp of first packet
-        if (bigEndian):
+
+        if magic_number == 0xa1b2c3d4:
+            print("Big Endian, microseconds")
             orig_time = struct.unpack('I', packet_header[0:4])[
                 0] + (struct.unpack('<I', packet_header[4:8])[0]*0.000001)
-        else:
+        elif magic_number == 0xd4c3b2a1:
+            print("Little Endian, microseconds")
             orig_time = struct.unpack('I', packet_header[0:4])[
                 0] + (struct.unpack('>I', packet_header[4:8])[0]*0.000001)
+            bigEndian = False
+        elif magic_number == 0xa1b23c4d:
+            print("Big Endian, nanoseconds")
+            orig_time = struct.unpack('I', packet_header[0:4])[
+                0] + (struct.unpack('<I', packet_header[4:8])[0]*0.000000001)
+            ms = False
+        elif magic_number == 0x4d3cb2a1:
+            print("Little Endian, nanoseconds")
+            orig_time = struct.unpack('I', packet_header[0:4])[
+                0] + (struct.unpack('>I', packet_header[4:8])[0]*0.000000001)
+            ms = False
+        else:
+            print("Invalid PCAP file format.")
+            return
 
         while file.readable:
             if not packet_header:
@@ -42,7 +49,7 @@ def parse_cap_file(filename):
             curPacket = packet()
             curPacket.packet_No_set(packet_number)
             curPacket.timestamp_set(
-                packet_header[0:4], packet_header[4:8], orig_time)
+                packet_header[0:4], packet_header[4:8], orig_time, ms)
 
             _, _, incl_len, _ = struct.unpack('IIII', packet_header)
 
@@ -121,7 +128,7 @@ def process_packet(payload_len, curPacket, connections):
         connections[connection_id].source_port = source_port
         connections[connection_id].destination_port = destination_port
         connections[connection_id].fragment_offset = fragment_offset
-        if (mf):
+        if (mf or fragment_offset > 0):
             connections[connection_id].num_frags += 1
         intermediate_dest = destination_ip
         if intermediate_dest not in connections[connection_id].inter_nodes:
