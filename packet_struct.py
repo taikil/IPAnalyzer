@@ -9,6 +9,7 @@ class IP_Header:
     protocol = None  # <type 'int'>
     fragment_offset = None  # <type 'int'>
     mf = False  # <type 'bool'>
+    ttl = None  # <type 'int'>
 
     def __init__(self):
         self.src_ip = None
@@ -19,6 +20,9 @@ class IP_Header:
     def ip_set(self, src_ip, dst_ip):
         self.src_ip = src_ip
         self.dst_ip = dst_ip
+
+    def ttl_set(self, ttl):
+        self.ttl = ttl
 
     def header_len_set(self, length):
         self.ip_header_len = length
@@ -75,125 +79,86 @@ class IP_Header:
         # Check the 14th bit (more fragments)
         self.more_fragments = (flags_and_offset & 0x2000) != 0
 
+    def get_ttl(self, ttl_byte):
+        self.ttl = struct.unpack('B', ttl_byte)[0]
 
-class TCP_Header:
-    src_port = 0
-    dst_port = 0
-    seq_num = 0
-    ack_num = 0
-    data_offset = 0
-    flags = {}
-    window_size = 0
-    checksum = 0
-    ugp = 0
+
+class UDP_Header:
+    src_port = None  # <type 'int'>
+    dst_port = None  # <type 'int'>
+    length = None  # <type 'int'>
+    checksum = None  # <type 'int'>
 
     def __init__(self):
         self.src_port = 0
         self.dst_port = 0
-        self.seq_num = 0
-        self.ack_num = 0
-        self.data_offset = 0
-        self.flags = {}
-        self.window_size = 0
+        self.length = 0
         self.checksum = 0
-        self.ugp = 0
 
-    def src_port_set(self, src):
-        self.src_port = src
+    def src_port_set(self, port):
+        self.src_port = port
 
-    def dst_port_set(self, dst):
-        self.dst_port = dst
+    def dst_port_set(self, port):
+        self.dst_port = port
 
-    def seq_num_set(self, seq):
-        self.seq_num = seq
+    def length_set(self, length):
+        self.length = length
 
-    def ack_num_set(self, ack):
-        self.ack_num = ack
+    def checksum_set(self, checksum):
+        self.checksum = checksum
 
-    def data_offset_set(self, data_offset):
-        self.data_offset = data_offset
+    def get_UDP(self, buffer):
+        src_port, dst_port, length, checksum = struct.unpack('!HHHH', buffer)
+        self.src_port_set(src_port)
+        self.dst_port_set(dst_port)
+        self.length_set(length)
+        self.checksum_set(checksum)
 
-    def flags_set(self, ack, rst, syn, fin):
-        self.flags["ACK"] = ack
-        self.flags["RST"] = rst
-        self.flags["SYN"] = syn
-        self.flags["FIN"] = fin
 
-    def win_size_set(self, size):
-        self.window_size = size
+class ICMP_Header:
+    type = None  # <type 'int'>
+    code = None  # <type 'int'>
+    checksum = None  # <type 'int'>
+    identifier = None  # <type 'int'>
+    sequence_number = None  # <type 'int'>
 
-    def get_src_port(self, buffer):
-        num1 = ((buffer[0] & 240) >> 4)*16*16*16
-        num2 = (buffer[0] & 15)*16*16
-        num3 = ((buffer[1] & 240) >> 4)*16
-        num4 = (buffer[1] & 15)
-        port = num1+num2+num3+num4
-        self.src_port_set(port)
-        # print(f"SRC PORT: {self.src_port}")
-        return None
+    def __init__(self):
+        self.type = 0
+        self.code = 0
+        self.checksum = 0
+        self.identifier = 0
+        self.sequence_number = 0
 
-    def get_dst_port(self, buffer):
-        num1 = ((buffer[0] & 240) >> 4)*16*16*16
-        num2 = (buffer[0] & 15)*16*16
-        num3 = ((buffer[1] & 240) >> 4)*16
-        num4 = (buffer[1] & 15)
-        port = num1+num2+num3+num4
-        self.dst_port_set(port)
-        # print(f"DST PORT: {self.dst_port}")
-        return None
+    def type_set(self, icmp_type):
+        self.type = icmp_type
 
-    def get_seq_num(self, buffer):
-        seq = struct.unpack(">I", buffer)[0]
-        self.seq_num_set(seq)
-        # print(seq)
-        return None
+    def code_set(self, icmp_code):
+        self.code = icmp_code
 
-    def get_ack_num(self, buffer):
-        ack = struct.unpack('>I', buffer)[0]
-        self.ack_num_set(ack)
-        return None
+    def checksum_set(self, checksum):
+        self.checksum = checksum
 
-    def get_flags(self, buffer):
-        value = struct.unpack("B", buffer)[0]
-        fin = value & 1
-        syn = (value & 2) >> 1
-        rst = (value & 4) >> 2
-        ack = (value & 16) >> 4
-        self.flags_set(ack, rst, syn, fin)
-        # print(self.flags)
-        return None
+    def identifier_set(self, identifier):
+        self.identifier = identifier
 
-    def get_window_size(self, buffer1, buffer2):
-        buffer = buffer2+buffer1
-        size = struct.unpack('H', buffer)[0]
-        self.win_size_set(size)
-        # print(f"Window Size: {size}")
-        return None
+    def sequence_number_set(self, sequence_number):
+        self.sequence_number = sequence_number
 
-    def get_data_offset(self, buffer):
-        value = struct.unpack("B", buffer)[0]
-        length = ((value & 240) >> 4)*4
-        self.data_offset_set(length)
-        # print(f"OFFSET: {self.data_offset}")
-        return None
-
-    def relative_seq_num(self, orig_num):
-        if (self.seq_num >= orig_num):
-            relative_seq = self.seq_num - orig_num
-            self.seq_num_set(relative_seq)
-        # print(self.seq_num)
-
-    def relative_ack_num(self, orig_num):
-        if (self.ack_num >= orig_num):
-            relative_ack = self.ack_num-orig_num+1
-            self.ack_num_set(relative_ack)
+    def get_ICMP(self, buffer):
+        icmp_type, icmp_code, checksum, identifier, sequence_number = struct.unpack(
+            '!BBHHH', buffer)
+        self.type_set(icmp_type)
+        self.code_set(icmp_code)
+        self.checksum_set(checksum)
+        self.identifier_set(identifier)
+        self.sequence_number_set(sequence_number)
 
 
 class packet():
-
     # pcap_hd_info = None
     IP_header = None
-    TCP_header = None
+    ICMP_header = None
+    UDP_header = None
     timestamp = 0
     packet_No = 0
     RTT_value = 0
@@ -203,8 +168,8 @@ class packet():
 
     def __init__(self):
         self.IP_header = IP_Header()
-        self.TCP_header = TCP_Header()
-        # self.pcap_hd_info = pcap_ph_info()
+        self.ICMP_header = ICMP_Header()
+        self.UDP_header = UDP_Header()
         self.timestamp = 0
         self.packet_No = 0
         self.RTT_value = 0.0
@@ -236,24 +201,14 @@ class Connection:
         self.destination_ip = ""
         self.source_port = 0
         self.destination_port = 0
-        self.window_size_src = 0
-        self.window_size_dst = 0
-        self.total_window_size = 0
         self.start_time = 0
         self.end_time = 0
-        self.packets_source_to_dest = 0
-        self.packets_dest_to_source = 0
-        self.data_bytes_source_to_dest = 0
-        self.data_bytes_dest_to_source = 0
-        self.fin_num = 0
-        self.syn_num = 0
-        self.rst_num = 0
         self.expected_ack = 0
         self.rtt_start = []
         self.rtt_end = []
         self.rtt_num = 0
         self.rtt = []
-        self.inter_nodes = []
+        self.intermediate_dsts = []
         self.num_frags = 0
         self.protocols = []
         self.fragment_offset = 0
