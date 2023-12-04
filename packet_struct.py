@@ -58,26 +58,14 @@ class IP_Header:
         self.protocol = struct.unpack('B', protocol_bytes)[0]
 
     def get_fragment_offset(self, flags_and_offset_bytes):
-        """
-        Extracts and sets the fragment offset field in the IP header.
-
-        Parameters:
-        - flags_and_offset_bytes (bytes): The bytes representing the flags and offset fields in the IP header.
-        """
         flags_and_offset = struct.unpack('>H', flags_and_offset_bytes)[0]
         # Extract the last 13 bits (fragment offset)
-        self.fragment_offset = flags_and_offset & 0x1FFF
+        self.fragment_offset = (flags_and_offset & 0x1FFF) * 8
 
     def get_more_fragments(self, flags_and_offset_bytes):
-        """
-        Extracts and sets the more fragments field in the IP header.
-
-        Parameters:
-        - flags_and_offset_bytes (bytes): The bytes representing the flags and offset fields in the IP header.
-        """
         flags_and_offset = struct.unpack('>H', flags_and_offset_bytes)[0]
         # Check the 14th bit (more fragments)
-        self.more_fragments = (flags_and_offset & 0x2000) != 0
+        self.mf = (flags_and_offset & 0x2000) != 0
 
     def get_ttl(self, ttl_byte):
         self.ttl = struct.unpack('B', ttl_byte)[0]
@@ -155,7 +143,6 @@ class ICMP_Header:
 
 
 class packet():
-    # pcap_hd_info = None
     IP_header = None
     ICMP_header = None
     UDP_header = None
@@ -165,6 +152,7 @@ class packet():
     RTT_flag = False
     buffer = None
     num_frags = 0
+    hops_info = []
 
     def __init__(self):
         self.IP_header = IP_Header()
@@ -195,20 +183,46 @@ class packet():
         self.RTT_value = round(rtt, 8)
 
 
+def mean(values):
+    return sum(values) / len(values)
+
+
+def std_dev(values):
+    avg = mean(values)
+    return (sum([(x - avg)**2 for x in values]) / len(values))**0.5
+
+
 class Connection:
     def __init__(self):
+        self.packets = []
         self.source_ip = ""
         self.destination_ip = ""
         self.source_port = 0
         self.destination_port = 0
         self.start_time = 0
         self.end_time = 0
-        self.expected_ack = 0
         self.rtt_start = []
         self.rtt_end = []
         self.rtt_num = 0
         self.rtt = []
-        self.intermediate_dsts = []
+        self.mf = 0
         self.num_frags = 0
-        self.protocols = []
+        self.protocol = 0
         self.fragment_offset = 0
+        self.ttl = -1
+        self.type = 0
+        self.identifier = 0  # <type 'int'>
+        self.sequence_number = 0  # <type 'int'>
+        self.hops = []
+
+
+class Traceroute:
+    def __init__(self):
+        self.source_ip = ""
+        self.destination_ip = ""
+        self.intermediate_nodes = []
+        self.protocols = []
+        self.num_frags = 0
+        self.last_offset = 0
+        self.avg_rtt = []
+        self.sd = []

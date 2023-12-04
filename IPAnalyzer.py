@@ -22,20 +22,23 @@ def parse_cap_file(filename):
         if magic_number == 0xa1b2c3d4:
             print("Big Endian, microseconds")
             orig_time = struct.unpack('I', packet_header[0:4])[
-                0] + (struct.unpack('<I', packet_header[4:8])[0]*0.000001)
+                0] + (struct.unpack('<I', packet_header[4:8])[0]*1e-6)
+
         elif magic_number == 0xd4c3b2a1:
             print("Little Endian, microseconds")
             orig_time = struct.unpack('I', packet_header[0:4])[
-                0] + (struct.unpack('>I', packet_header[4:8])[0]*0.000001)
+                0] + (struct.unpack('>I', packet_header[4:8])[0]*1e-6)
+
         elif magic_number == 0xa1b23c4d:
             print("Big Endian, nanoseconds")
             orig_time = struct.unpack('I', packet_header[0:4])[
-                0] + (struct.unpack('<I', packet_header[4:8])[0]*0.000000001)
+                0] + (struct.unpack('<I', packet_header[4:8])[0]*1e-9)
             ms = False
+
         elif magic_number == 0x4d3cb2a1:
             print("Little Endian, nanoseconds")
             orig_time = struct.unpack('I', packet_header[0:4])[
-                0] + (struct.unpack('>I', packet_header[4:8])[0]*0.000000001)
+                0] + (struct.unpack('>I', packet_header[4:8])[0]*1e-9)
             ms = False
         else:
             print("Invalid PCAP file format.")
@@ -44,14 +47,14 @@ def parse_cap_file(filename):
         while True:
             if not packet_header:
                 break
-            _, _, incl_len, _ = struct.unpack('IIII', packet_header)
-            if incl_len == 0:
+            _, _, _, orig_len = struct.unpack('IIII', packet_header)
+            buffer = file.read(orig_len)
+            if len(buffer) == 0:
                 break
-            buffer = file.read(incl_len)
             curPacket = parse_packet(buffer)
             if curPacket == None:
                 packet_number += 1
-                file.read(16)
+                packet_header = file.read(16)
                 continue
             curPacket.packet_No_set(packet_number)
             curPacket.timestamp_set(
@@ -74,17 +77,12 @@ def parse_packet(buffer):
     ip_header_buffer = buffer[i: i + 20]
     i += 20
     get_IP_info(curPacket, ip_header_buffer)
-
-    if curPacket.IP_header.protocol != 17 and curPacket.IP_header.protocol != 1:
-        print(curPacket.IP_header.src_ip)
-        print(curPacket.IP_header.dst_ip)
-        print("---------------")
-        return None
-    print(curPacket.IP_header.dst_ip)
-
     # If IP Header is longer than 20 bytes, read options
     if curPacket.IP_header.ip_header_len > 20:
         i += curPacket.IP_header.ip_header_len - 20
+
+    if curPacket.IP_header.protocol != 17 and curPacket.IP_header.protocol != 1:
+        return None
 
     # If UDP
     if curPacket.IP_header.protocol == 17:
@@ -94,12 +92,16 @@ def parse_packet(buffer):
         curUDP = UDP_Header()
         curUDP.get_UDP(udp_buffer)
         curPacket.UDP_header = curUDP
+        curPacket.hops_info = (curPacket.UDP_header.src_port, float(
+            curPacket.IP_header.ttl), curPacket.timestamp)
     else:
         icmp_buffer = buffer[i:i+8]
         i += 8
         curICMP = ICMP_Header()
         curICMP.get_ICMP(icmp_buffer)
         curPacket.ICMP_header = curICMP
+        curPacket.hops_info = (curICMP.sequence_number,
+                               curPacket.IP_header.ttl, curPacket.timestamp)
 
     return curPacket
 
@@ -126,8 +128,8 @@ def process_packet(curPacket, connections):
     timestamp = curPacket.timestamp
     type = curPacket.ICMP_header.type
 
-    connection_id = f"{source_ip}:{source_port}-{destination_ip}:{destination_port}"
-    src_to_dst = f"{destination_ip}:{destination_port}-{source_ip}:{source_port}"
+    connection_id = f"{source_ip}-{destination_ip}"
+    src_to_dst = f"{destination_ip}-{source_ip}"
     if connection_id not in connections and src_to_dst not in connections:
         print(connection_id)
         connections[connection_id] = Connection()
@@ -135,40 +137,105 @@ def process_packet(curPacket, connections):
         connections[connection_id].destination_ip = destination_ip
         connections[connection_id].source_port = source_port
         connections[connection_id].destination_port = destination_port
+        connections[connection_id].start_time = timestamp
 
     connection = connections[connection_id]
-    connection.fragment_offset = fragment_offset
+    if (fragment_offset != 0):
+        # print("offset ", fragment_offset, source_ip,
+        #       destination_ip, curPacket.UDP_header.dst_port)
+        connection.fragment_offset = fragment_offset
+    connection.type = type
+    connection.mf = mf
+    # connection.end_time = timestamp
 
-    print(type)
-    if (type == 11) and source_ip not in connection.intermediate_dsts:
-        connection.intermediate_dsts.append(source_ip)
+    if source_ip == connection.source_ip:
+        connection.rtt_end.append(timestamp)
+    if type == 0:
+        connection.hops.append(curPacket.hops_info)
 
     if (mf or fragment_offset > 0):
         connection.num_frags += 1
-    connection.start_time = timestamp
-    if protocol not in connection.protocols and (protocol == 1 or protocol == 17):
-        connection.protocols.append(protocol)
+    if (protocol == 1 or protocol == 17):
+        connection.protocol = protocol
+    if protocol == 1:
+        connection.identifier = curPacket.ICMP_header.identifier
+        connection.sequence_number = curPacket.ICMP_header.sequence_number
+
+
+def calculate_output(connections):
+    trace = Traceroute()
+    original_connection = next(iter(connections.values()))
+    for connection in connections.values():
+        if (connection.type == 3):
+            original_connection = connection
+            print(connection.source_ip, connection.destination_ip, "-",
+                  original_connection.source_ip, original_connection.destination_ip)
+    trace.source_ip = original_connection.source_ip
+    trace.destination_ip = original_connection.destination_ip
+
+    for connection in connections.values():
+        rtt = []
+        if connection.type == 11:
+            trace.intermediate_nodes.append(connection.source_ip)
+            for i in range(len(connection.rtt_end)):
+                cur_rtt = connection.rtt_end[i] - connection.start_time
+                rtt.append(cur_rtt)
+
+            trace.avg_rtt.append(mean(rtt))
+            trace.sd.append(std_dev(rtt))
+
+        if connection.protocol not in trace.protocols:
+            trace.protocols.append(connection.protocol)
+
+        if connection.mf:
+            trace.num_frags += 1
+            trace.last_offset = connection.fragment_offset
+
+    # Add the source and destination rtt
+    for i in range(len(original_connection.rtt_end)):
+        cur_rtt = original_connection.rtt_end[i] - \
+            original_connection.start_time
+        rtt.append(cur_rtt)
+
+    trace.avg_rtt.append(mean(rtt))
+    trace.sd.append(std_dev(rtt))
+
+    if connection.protocol not in trace.protocols:
+        trace.protocols.append(connection.protocol)
+
+    if connection.mf:
+        trace.num_frags += 1
+        trace.last_offset = original_connection.fragment_offset
+
+    return trace
 
 
 def print_connection_info(connections):
     protocols = {1: "ICMP",
                  17: "UDP"}
 
-    for connection in connections.values():
-        print(f"Source IP: {connection.source_ip}")
-        print(f"Destination IP: {connection.destination_ip}")
+    trace = calculate_output(connections)
 
-        print("Intermediate Destination Nodes:")
-        for i, intermediate_dest in enumerate(connection.intermediate_dsts, start=1):
-            print(f"{i}. {intermediate_dest}")
+    print(f"Source IP: {trace.source_ip}")
+    print(f"Destination IP: {trace.destination_ip}")
 
-        print("\nProtocol Values:")
-        for protocol in connection.protocols:
-            print(f"{protocol}: {protocols[protocol]}")
+    print("Intermediate Destination Nodes:")
+    for i, node in enumerate(trace.intermediate_nodes, start=1):
+        print(f"{i}. {node}")
 
-        print(f"\nNumber of Fragments: {connection.num_frags}")
-        print(f"Offset of Last Fragment: {connection.fragment_offset}")
-        print("\n")
+    print("\nProtocol Values:")
+    for protocol in trace.protocols:
+        print(f"{protocol}: {protocols[protocol]}")
+
+    print(f"\nNumber of Fragments: {trace.num_frags}")
+    print(f"Offset of Last Fragment: {trace.last_offset}")
+    print("\n")
+    print(len(trace.avg_rtt))
+    for i in range(len(trace.avg_rtt)-1):
+        print(
+            f"The avg RTT between {trace.source_ip} and {trace.intermediate_nodes[i]} is {round(trace.avg_rtt[i] * 1000, 5)} ms, the s.d. is {round(trace.sd[i] * 1000, 5)} ms")
+    print(
+        f"The avg RTT between {trace.source_ip} and {trace.destination_ip} is {round(trace.avg_rtt[(len(trace.avg_rtt)-1)], 5)} ms, the s.d. is {round(trace.sd[(len(trace.sd )-1)], 5)} ms")
 
 
 if __name__ == "__main__":
