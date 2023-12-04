@@ -116,6 +116,8 @@ class ICMP_Header:
         self.checksum = 0
         self.identifier = 0
         self.sequence_number = 0
+        self.source_port = None
+        self.destination_port = None
 
     def type_set(self, icmp_type):
         self.type = icmp_type
@@ -132,14 +134,32 @@ class ICMP_Header:
     def sequence_number_set(self, sequence_number):
         self.sequence_number = sequence_number
 
+    def source_port_set(self, source_port):
+        self.source_port = source_port
+
+    def destination_port_set(self, destination_port):
+        self.destination_port = destination_port
+
     def get_ICMP(self, buffer):
         icmp_type, icmp_code, checksum, identifier, sequence_number = struct.unpack(
-            '!BBHHH', buffer)
+            '!BBHHH', buffer[0:8])
         self.type_set(icmp_type)
         self.code_set(icmp_code)
         self.checksum_set(checksum)
         self.identifier_set(identifier)
         self.sequence_number_set(sequence_number)
+        if (self.type == 0):
+            self.extract_udp_info(buffer[8:])
+
+    def extract_udp_info(self, icmp_payload):
+        udp_header = UDP_Header()
+        udp_header.get_UDP(icmp_payload)
+
+        source_port = udp_header.src_port
+        destination_port = udp_header.dst_port
+
+        self.source_port_set(source_port)
+        self.destination_port_set(destination_port)
 
 
 class packet():
@@ -213,7 +233,29 @@ class Connection:
         self.type = 0
         self.identifier = 0  # <type 'int'>
         self.sequence_number = 0  # <type 'int'>
-        self.hops = []
+        self.sent_echo_request_timestamps = []
+
+    def print_connection_info(self):
+        print(f"Source IP: {self.source_ip}")
+        print(f"Destination IP: {self.destination_ip}")
+        print(f"Source Port: {self.source_port}")
+        print(f"Destination Port: {self.destination_port}")
+        print(f"Start Time: {self.start_time}")
+        print(f"End Time: {self.end_time}")
+        print(f"RTT Start: {self.rtt_start}")
+        print(f"RTT End: {self.rtt_end}")
+        print(f"RTT Num: {self.rtt_num}")
+        print(f"RTT: {self.rtt}")
+        print(f"MF: {self.mf}")
+        print(f"Number of Fragments: {self.num_frags}")
+        print(f"Protocol: {self.protocol}")
+        print(f"Fragment Offset: {self.fragment_offset}")
+        print(f"TTL: {self.ttl}")
+        print(f"Type: {self.type}")
+        print(f"Identifier: {self.identifier}")
+        print(f"Sequence Number: {self.sequence_number}")
+        print(
+            f"Sent Echo Request Timestamps: {self.sent_echo_request_timestamps}")
 
 
 class Traceroute:
@@ -224,5 +266,5 @@ class Traceroute:
         self.protocols = []
         self.num_frags = 0
         self.last_offset = 0
-        self.avg_rtt = []
+        self.rtt = []
         self.sd = []
