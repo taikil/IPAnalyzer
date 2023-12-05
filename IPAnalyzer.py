@@ -2,21 +2,23 @@ from packet_struct import *
 import struct
 import sys
 from collections import defaultdict
+import statistics as s
 
 trace = Traceroute()
+ICMP = 1
+UDP = 17
+ms = True
+orig_time = 0
 
 
 def parse_cap_file(filename):
-    connections = defaultdict(Connection)
+    global ms
+    global orig_time
     with open(filename, 'rb') as file:
 
         global_header = file.read(24)
         magic_number, _, _, _, _, _, _ = struct.unpack(
             "IHHIIII", global_header)
-
-        ms = True
-        orig_time = 0
-        packet_number = 1
 
         packet_header = file.read(16)
         # Get Timestamp of first packet
@@ -53,26 +55,23 @@ def parse_cap_file(filename):
             buffer = file.read(orig_len)
             if len(buffer) == 0:
                 break
-            curPacket = parse_packet(buffer)
+            curPacket = parse_packet(buffer, packet_header)
             if curPacket == None:
-                packet_number += 1
                 packet_header = file.read(16)
                 continue
-            curPacket.packet_No_set(packet_number)
-            curPacket.timestamp_set(
-                packet_header[0:4], packet_header[4:8], orig_time, ms)
-            process_packet(curPacket, connections)
 
             # Move to next packet
-            packet_number += 1
             packet_header = file.read(16)
 
-    return connections
 
-
-def parse_packet(buffer):
+def parse_packet(buffer, packet_header):
     global trace
+    global ms
+    global orig_time
+
     curPacket = packet()
+    curPacket.timestamp_set(
+        packet_header[0:4], packet_header[4:8], orig_time, ms)
     i = 0
     # Ethernet Header [0:14]
     i += 14
@@ -84,27 +83,90 @@ def parse_packet(buffer):
     if curPacket.IP_header.ip_header_len > 20:
         i += curPacket.IP_header.ip_header_len - 20
 
-    if curPacket.IP_header.protocol != 17 and curPacket.IP_header.protocol != 1:
-        return None
-
     # If UDP
-    if curPacket.IP_header.protocol == 17:
+    if curPacket.IP_header.protocol == UDP:
         # First 8 bytes of TCPHeader
         udp_buffer = buffer[i:i+8]
         i += 8
+        if trace.os == None:
+            trace.os = "Linux"
         curUDP = UDP_Header()
         curUDP.get_UDP(udp_buffer)
+        # Unwanted
+        if curUDP.dst_port < 33434 or curUDP.dst_port > 33529:
+            return None
         curPacket.UDP_header = curUDP
-    else:
-        icmp_buffer = buffer[i:i+8]
-        i += 8
+        trace.hops.append((curPacket.IP_header.ttl,
+                          curPacket.UDP_header.src_port, curPacket.timestamp))
+        if UDP not in trace.protocols:
+            trace.protocols.append(UDP)
+    # ICMP
+    elif curPacket.IP_header.protocol == ICMP:
+        icmp_buffer = buffer[i:]
         curICMP = ICMP_Header()
         curICMP.get_ICMP(icmp_buffer)
         curPacket.ICMP_header = curICMP
+        if curICMP.type == 8 or curICMP.type == 3:
+            if trace.os == None:
+                trace.os == "Windows"
+            trace.hops.append((curPacket.IP_header.ttl,
+                              curPacket.ICMP_header.identification, curPacket.timestamp))
+        else:
+            if trace.os == "Windows":
+                identification = curPacket.ICMP_header.identification
+            if trace.os == "Linux":
+                identification = curPacket.ICMP_header.source_port
+
+            for hop in trace.hops:
+                print(hop)
+                print(curPacket.IP_header.src_ip)
+                print(identification)
+                if hop[1] == identification:
+                    if curPacket.IP_header.src_ip not in trace.rtt.keys():
+                        trace.rtt[curPacket.IP_header.src_ip] = [
+                            curPacket.timestamp-hop[2]]
+                    else:
+
+                        temp = trace.rtt[curPacket.IP_header.src_ip]
+                        temp.append(curPacket.timestamp-hop[2])
+                        trace.rtt[curPacket.IP_header.src_ip] = temp
+
+                    if curPacket.IP_header.src_ip not in trace.intermediate_nodes.keys():
+                        offset = 0.0
+                        while hop[0] + offset in trace.intermediate_nodes.values():
+                            offset += 1
+
+                        trace.intermediate_nodes[curPacket.IP_header.src_ip] = hop[0] + offset
+        if 1 not in trace.protocols:
+            trace.protocols.append(1)
+
+    else:
+        return None
+
+    if curPacket.IP_header.identification not in trace.frags.keys():
+        trace.frags[curPacket.IP_header.identification] = (
+            trace.num_frags, 1, 0)
+        trace.num_frags += 1
+
+    if trace.offset != 0 and curPacket.IP_header.identification in trace.frags.keys():
+        trace.frags[curPacket.IP_header.identification] = (
+            trace.frags[curPacket.IP_header.identification][0], trace.frags[curPacket.IP_header.identification][1]+1, trace.offset*8)
+
+    if trace.os == "Windows":
+        identification = curPacket.ICMP_header.identification
+    if trace.os == "Linux":
+        identification = curPacket.ICMP_header.source_port
+
+    check_hops(curPacket, identification)
+
     if trace.source_ip == "":
         trace.source_ip = curPacket.IP_header.src_ip
     if trace.destination_ip == "":
         trace.destination_ip = curPacket.IP_header.dst_ip
+
+    if curPacket.IP_header.fragment_offset > 0:
+        trace.offset = curPacket.IP_header.fragment_offset
+        trace.num_frags += 1
 
     return curPacket
 
@@ -112,6 +174,7 @@ def parse_packet(buffer):
 def get_IP_info(curPacket, ip_header_buffer):
     curPacket.IP_header.get_header_len(ip_header_buffer[0:1])
     curPacket.IP_header.get_total_len(ip_header_buffer[2:4])
+    curPacket.IP_header.get_identification(ip_header_buffer[4:6])
     curPacket.IP_header.get_fragment_offset(ip_header_buffer[6:8])
     curPacket.IP_header.get_more_fragments(ip_header_buffer[6:8])
     curPacket.IP_header.get_ttl(ip_header_buffer[8:9])
@@ -120,109 +183,78 @@ def get_IP_info(curPacket, ip_header_buffer):
         ip_header_buffer[12:16], ip_header_buffer[16:20])
 
 
-def process_packet(curPacket, connections):
+def check_hops(curPacket, id):
+    for hop in trace.hops:
+        print(hop)
+        print(curPacket.IP_header.dst_ip)
+        print(id)
+        if hop[1] == id:
+            if curPacket.IP_header.src_ip not in trace.rtt.keys():
+                trace.rtt[curPacket.IP_header.src_ip] = [
+                    curPacket.timestamp-hop[2]]
+            else:
+
+                temp = trace.rtt[curPacket.IP_header.src_ip]
+                temp.append(curPacket.timestamp-hop[2])
+                trace.rtt[curPacket.IP_header.src_ip] = temp
+
+            if curPacket.IP_header.src_ip not in trace.intermediate_nodes.keys():
+                offset = 0.0
+                while hop[0] + offset in trace.intermediate_nodes.values():
+                    offset += 1
+
+                trace.intermediate_nodes[curPacket.IP_header.src_ip] = hop[0] + offset
+
+
+def reorder_output():
     global trace
-    source_ip = curPacket.IP_header.src_ip
-    destination_ip = curPacket.IP_header.dst_ip
-    protocol = curPacket.IP_header.protocol
-    mf = curPacket.IP_header.mf
-    fragment_offset = curPacket.IP_header.fragment_offset
-    source_port = curPacket.UDP_header.src_port
-    destination_port = curPacket.UDP_header.dst_port
-    timestamp = curPacket.timestamp
-    type = curPacket.ICMP_header.type
 
-    connection_id = f"{source_ip}-{destination_ip}"
-    src_to_dst = f"{destination_ip}-{source_ip}"
-    if connection_id not in connections and src_to_dst not in connections:
-        connections[connection_id] = Connection()
-        connections[connection_id].source_ip = source_ip
-        connections[connection_id].destination_ip = destination_ip
-        connections[connection_id].source_port = source_port
-        connections[connection_id].destination_port = destination_port
-        connections[connection_id].start_time = timestamp
-
-    connection = connections[connection_id]
-    if (fragment_offset != 0):
-        connection.fragment_offset = fragment_offset
-        trace.last_offset = fragment_offset
-        trace.num_frags += 1
-    connection.type = type
-    connection.mf = mf
-    # connection.end_time = timestamp
-
-    if source_ip == connection.source_ip:
-        connection.rtt_end.append(timestamp)
-
-    if (protocol == 1 or protocol == 17):
-        connection.protocol = protocol
-    if protocol == 1:
-        connection.identifier = curPacket.ICMP_header.identifier
-        connection.sequence_number = curPacket.ICMP_header.sequence_number
+    print("Intermediate: ", len(trace.intermediate_nodes))
+    # for k, v in trace.intermediate_nodes.items():
+    #     print("KV", k, v)
+    # end_node = trace.intermediate_nodes[trace.destination_ip]
+    # trace.intermediate_nodes.pop(trace.destination_ip)
+    # for k, v in trace.intermediate_nodes.items():
+    #     if v > end_node:
+    #         trace.intermediate_nodes[k] = v - 1
 
 
-def calculate_output(connections):
+def print_connection_info():
     global trace
-    original_connection = connections[f"{trace.source_ip}-{trace.destination_ip}"]
 
-    for connection in connections.values():
-        rtt = []
-        if connection.type == 11:
-            trace.intermediate_nodes.append(connection.source_ip)
-            for i in range(len(connection.rtt_end)):
-                cur_rtt = connection.rtt_end[i] - connection.start_time
-                rtt.append(cur_rtt)
-
-            trace.rtt.append(mean(rtt))
-            trace.sd.append(std_dev(rtt))
-
-        if connection.protocol not in trace.protocols:
-            trace.protocols.append(connection.protocol)
-
-        if connection.mf:
-            trace.last_offset = connection.fragment_offset
-
-    # Add the source and destination rtt
-    rtt = []
-    for i in range(len(original_connection.rtt_end)):
-        cur_rtt = original_connection.rtt_end[i] - \
-            original_connection.start_time
-        rtt.append(cur_rtt)
-
-    print(rtt)
-    trace.rtt.append(mean(rtt))
-    trace.sd.append(std_dev(rtt))
-
-    if connection.protocol not in trace.protocols:
-        trace.protocols.append(connection.protocol)
-
-
-def print_connection_info(connections):
     protocols = {1: "ICMP",
                  17: "UDP"}
+    ordered = [(k, v) for k, v in sorted(
+        trace.intermediate_nodes.items(), key=lambda x: x[1])]
 
-    calculate_output(connections)
+    reorder_output()
 
     print(f"Source IP: {trace.source_ip}")
     print(f"Destination IP: {trace.destination_ip}")
 
     print("Intermediate Destination Nodes:")
-    for i, node in enumerate(trace.intermediate_nodes, start=1):
-        print(f"{i}. {node}")
+    for i, node in enumerate(ordered, start=1):
+        print(f"{i}. {node[0]}")
 
     print("\nProtocol Values:")
     for protocol in trace.protocols:
         print(f"{protocol}: {protocols[protocol]}")
 
     print(f"\nNumber of Fragments: {trace.num_frags}")
-    print(f"Offset of Last Fragment: {trace.last_offset}")
+    print(f"Offset of Last Fragment: {trace.offset}")
     print("\n")
-    print(len(trace.rtt))
-    for i in range(len(trace.rtt)-1):
+
+    if trace.num_frags > 1:
+        for fragment in trace.frags.values():
+            print(
+                f"The number of fragments created from the original datagram D{fragment[0]} is: {fragment[1]}")
+            print(f"The offset of the last fragment is: {fragment[2]}")
+        print("\n")
+    for k, v in ordered:
         print(
-            f"The avg RTT between {trace.source_ip} and {trace.intermediate_nodes[i]} is {round(trace.rtt[i] * 1000, 5)} ms, the s.d. is {round(trace.sd[i] * 1000, 5)} ms")
+            f"The avg RTT between {trace.source_ip} and {k} is {round(mean(trace.rtt[k]) * 1000, 5)} ms, the s.d. is {round(std_dev(trace.rtt[k]) * 1000, 5)} ms")
     print(
-        f"The avg RTT between {trace.source_ip} and {trace.destination_ip} is {round(trace.rtt[(len(trace.rtt)-1)], 5)} ms, the s.d. is {round(trace.sd[(len(trace.sd )-1)], 5)} ms")
+        f"The avg RTT between {trace.source_ip} and {trace.destination_ip} is {round(trace.rtt[trace.destination_ip] * 1000, 5)} ms, the s.d. is {round(std_dev(trace[trace.destination_ip]), 5)} ms")
 
 
 if __name__ == "__main__":
@@ -231,5 +263,5 @@ if __name__ == "__main__":
         sys.exit(1)
 
     filename = sys.argv[1]
-    connections = parse_cap_file(filename)
-    print_connection_info(connections)
+    parse_cap_file(filename)
+    print_connection_info()
